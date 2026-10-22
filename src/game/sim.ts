@@ -1,7 +1,12 @@
 import { ARMOR_TIERS, BOTS, CLASSES, ITEMS, WEAPONS, type WeaponId } from '../data/game-data';
 import { angleDiff, angleTo, clamp, dist } from '../core/math';
-import { PLAYER_R, TIME_LIMIT, addItem, consumeReserve, extractIndexAt, extractSpots, makeFighter, type Fighter, type Raid, type Item } from './state';
-import { castRay, freeSpot, isSolid, losClear, solidAt, tileAt } from '../world/map';
+import { PLAYER_R, TIME_LIMIT, addItem, consumeReserve, extractIndexAt, extractSpots, makeFighter, type FxEvent, type Fighter, type Raid, type Item } from './state';
+import { castRay, freeSpot, idx, isSolid, losClear, solidAt, tileAt, T_DOOR, T_FLOOR } from '../world/map';
+
+export function pushFx(r: Raid, k: string, x: number, y: number) {
+  r.fx.push({ k, x, y } as FxEvent);
+  if (r.fx.length > 80) r.fx.splice(0, r.fx.length - 80);
+}
 
 export interface PlayerInput {
   mx: number;
@@ -49,6 +54,7 @@ function tryShoot(r: Raid, f: Fighter, aim: number, firstShot: boolean) {
   if (!firstShot && !w.auto) return false;
   f.fireT = w.rate / 1000;
   f.mag -= 1;
+  pushFx(r, 'shot_' + f.weapon, f.x, f.y);
   for (let i = 0; i < w.pellets; i++) {
     const spread = (Math.random() - 0.5) * w.spread * 2;
     spawnBullet(r, f, aim + spread, w.speed, w.dmg, w.color, w.range / w.speed);
@@ -64,7 +70,6 @@ export function startReload(f: Fighter) {
   if ((f.reserve[w.ammo] ?? 0) <= 0) return;
   f.reloadT = (w.reload * (f.classId === 'queen' ? 0.85 : 1));
 }
-
 function finishReload(f: Fighter) {
   const w = WEAPONS[f.weapon];
   const need = w.mag - f.mag;
@@ -87,8 +92,31 @@ export function equipWeapon(f: Fighter, id: WeaponId): boolean {
   return true;
 }
 
+function killFighter(r: Raid, target: Fighter, byId: number) {
+  target.hp = 0;
+  target.alive = false;
+  const killer = r.fighters.find((f) => f.id === byId);
+  if (killer && killer !== target) killer.kills += 1;
+  r.particles.push({ x: target.x, y: target.y, vx: 0, vy: 0, life: 0.6, max: 0.6, color: target.color, size: 6, kind: 'smoke' });
+  const drops: Item[] = [{ id: target.weapon, n: 1 }, ...(target.inv.length ? target.inv.slice(0, 4) : [])];
+  r.loot.push({
+    id: 8000 + target.id, x: target.x, y: target.y, kind: 'corpse', opened: false,
+    items: drops, label: `Тело: ${target.name}`,
+  });
+  target.inv = [];
+  pushFx(r, target === r.me ? 'death' : 'kill', target.x, target.y);
+  if (target === r.me) {
+    r.over = 'dead';
+    r.log.unshift('Вы погибли. Снаряжение потеряно.');
+  } else {
+    r.log.unshift(`Убит ${target.name}.`);
+  }
+}
+
 function damage(r: Raid, target: Fighter, amount: number, byId: number) {
   if (!target.alive) return;
+  const attacker = r.fighters.find((f) => f.id === byId);
+  if (r.coop && attacker && !attacker.isBot && !target.isBot) return;
   let dmg = amount;
   if (target.shieldT > 0) dmg *= 0.35;
   if (target.armor && target.armorDur > 0) {
@@ -101,29 +129,17 @@ function damage(r: Raid, target: Fighter, amount: number, byId: number) {
   }
   target.hp -= dmg;
   target.hitT = 0.18;
+  pushFx(r, 'hit', target.x, target.y);
+  if (target.hp > 0 && target.shieldT <= 0 && dmg > 5 && Math.random() < 0.26) {
+    if (target.bleed < 3) target.bleed += 1;
+    pushFx(r, 'bleed', target.x, target.y);
+    if (target === r.me) r.log.unshift('Кровотечение! Нужен бинт.');
+  }
   for (let i = 0; i < 4; i++) {
     r.particles.push({ x: target.x, y: target.y, vx: (Math.random() - 0.5) * 160, vy: (Math.random() - 0.5) * 160, life: 0.3, max: 0.3, color: '#d9544d', size: 2 + Math.random() * 2, kind: 'blood' });
   }
   if (target === r.me) r.hurt = Math.min(1, r.hurt + dmg / target.maxHp);
-  if (target.hp <= 0) {
-    target.hp = 0;
-    target.alive = false;
-    const killer = r.fighters.find((f) => f.id === byId);
-    if (killer && killer !== target) killer.kills += 1;
-    r.particles.push({ x: target.x, y: target.y, vx: 0, vy: 0, life: 0.6, max: 0.6, color: target.color, size: 6, kind: 'smoke' });
-    const drops: Item[] = [{ id: target.weapon, n: 1 }, ...(target.inv.length ? target.inv.slice(0, 4) : [])];
-    r.loot.push({
-      id: 8000 + target.id, x: target.x, y: target.y, kind: 'corpse', opened: false,
-      items: drops, label: target.isBot ? `Тело: ${target.name}` : `Тело: ${target.name}`,
-    });
-    target.inv = [];
-    if (target === r.me) {
-      r.over = 'dead';
-      r.log.unshift('Вы погибли. Снаряжение потеряно.');
-    } else {
-      r.log.unshift(`Убит ${target.name}.`);
-    }
-  }
+  if (target.hp <= 0) killFighter(r, target, byId);
 }
 
 function updateHuman(r: Raid, f: Fighter, input: PlayerInput, dt: number) {
@@ -154,7 +170,7 @@ function updateHuman(r: Raid, f: Fighter, input: PlayerInput, dt: number) {
     f.reloadT -= dt;
     if (f.reloadT <= 0) { f.reloadT = 0; finishReload(f); }
   }
-  if (input.reload) startReload(f);
+  if (input.reload) { const before = f.reloadT; startReload(f); if (f.reloadT > 0 && before <= 0) pushFx(r, 'reload', f.x, f.y); }
   if (input.shoot) tryShoot(r, f, f.angle, true);
 
   if (f.shieldT > 0) f.shieldT -= dt;
@@ -184,6 +200,30 @@ function updateHuman(r: Raid, f: Fighter, input: PlayerInput, dt: number) {
 }
 
 function interact(r: Raid, f: Fighter) {
+  // сначала закрытые двери
+  let door: (typeof r.map.doors)[number] | null = null;
+  let doorD = 92;
+  for (const d of r.map.doors) {
+    if (d.open) continue;
+    const dd = dist((d.c + 0.5) * 32, (d.r + 0.5) * 32, f.x, f.y);
+    if (dd < doorD) { doorD = dd; door = d; }
+  }
+  if (door) {
+    const ki = f.inv.findIndex((i) => i.id === door!.key);
+    if (ki < 0) {
+      r.log.unshift(`Заперто. Нужен ${ITEMS[door.key]?.name ?? 'ключ'}.`);
+      return;
+    }
+    const slot = f.inv[ki];
+    slot.n -= 1;
+    if (slot.n <= 0) f.inv.splice(ki, 1);
+    r.map.tile[idx(door.c, door.r)] = T_FLOOR;
+    door.open = true;
+    r.log.unshift(`${door.label} открыт.`);
+    pushFx(r, 'unlock', (door.c + 0.5) * 32, (door.r + 0.5) * 32);
+    return;
+  }
+
   let best: number | null = null, bestD = 64;
   for (const box of r.loot) {
     if (box.opened) continue;
@@ -203,7 +243,52 @@ function interact(r: Raid, f: Fighter) {
   box.items = left;
   box.opened = left.length === 0;
   if (taken === 0) r.log.unshift('Инвентарь полон.');
+  if (taken > 0) pushFx(r, 'pickup', f.x, f.y);
   if (taken > 0) r.log.splice(0, Math.max(0, r.log.length - 40));
+}
+
+export function applyConsumable(r: Raid, f: Fighter, id: string): boolean {
+  if (id === 'medkit') {
+    f.hp = Math.min(f.maxHp, f.hp + 45);
+    f.bleed = 0;
+  } else if (id === 'bandage') {
+    if (f.bleed <= 0) return false;
+    f.bleed = 0;
+    f.hp = Math.min(f.maxHp, f.hp + 5);
+  } else if (id === 'stim') {
+    f.sta = Math.min(f.maxSta, f.sta + 60);
+  } else if (id === 'plate') {
+    if (!f.armor) return false;
+    f.armorDur = Math.min(100, f.armorDur + 40);
+  } else return false;
+  r.log.unshift(`Использовано: ${ITEMS[id]?.name ?? id}`);
+  pushFx(r, 'use', f.x, f.y);
+  return true;
+}
+
+/** Использовать предмет из инвентаря бойца (в рейде). */
+export function useItemInRaid(r: Raid, f: Fighter, id: string): boolean {
+  if (!f.alive) return false;
+  const idx2 = f.inv.findIndex((i) => i.id === id);
+  if (idx2 < 0) return false;
+  if (!applyConsumable(r, f, id)) return false;
+  const it = f.inv[idx2];
+  it.n -= 1;
+  if (it.n <= 0) f.inv.splice(idx2, 1);
+  return true;
+}
+
+/** Выбросить предмет из инвентаря — остаётся лежать на земле. */
+export function dropItem(r: Raid, f: Fighter, index: number): boolean {
+  if (index < 0 || index >= f.inv.length) return false;
+  const it = f.inv.splice(index, 1)[0];
+  r.loot.push({
+    id: 9000 + Math.floor(Math.random() * 900),
+    x: f.x + Math.cos(f.angle) * 22, y: f.y + Math.sin(f.angle) * 22,
+    kind: 'crate', items: [it], opened: false, label: 'Выброшено',
+  });
+  r.log.unshift(`Выброшено: ${ITEMS[it.id]?.name ?? it.id}`);
+  return true;
 }
 
 function botShoot(r: Raid, b: Fighter, tx: number, ty: number, dt: number) {
@@ -342,6 +427,11 @@ export function updateRaid(r: Raid, input: PlayerInput, dt: number, extra?: Map<
   }
   for (const b of r.fighters) if (b.isBot) updateBot(r, b, dt);
   updateBullets(r, dt);
+  for (const f of r.fighters) {
+    if (!f.alive || f.bleed <= 0) continue;
+    f.hp -= f.bleed * 1.5 * dt;
+    if (f.hp <= 0) killFighter(r, f, -1);
+  }
   for (let i = r.particles.length - 1; i >= 0; i--) {
     const p = r.particles[i];
     p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.94; p.vy *= 0.94; p.life -= dt;
@@ -354,6 +444,7 @@ export function updateRaid(r: Raid, input: PlayerInput, dt: number, extra?: Map<
       if (r.me.extractT >= 4) {
         r.over = 'extracted';
         r.log.unshift('Эвакуация успешна.');
+        pushFx(r, 'extract', r.me.x, r.me.y);
       }
     } else {
       r.me.extractT = Math.max(0, r.me.extractT - dt * 2);

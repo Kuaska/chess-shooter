@@ -11,13 +11,16 @@ export const T_TREE = 2;
 export const T_CRATE = 3;
 export const T_PALACE = 4;
 export const T_ROAD = 5;
+export const T_DOOR = 6;
 
 export interface LootSpot { x: number; y: number; kind: 'crate' | 'safe' | 'duffel' }
+export interface VaultDoor { c: number; r: number; key: string; label: string; open: boolean }
 
 export interface GameMap {
   size: number;
   tile: Uint8Array;
   spots: LootSpot[];
+  doors: VaultDoor[];
   seed: number;
 }
 
@@ -29,8 +32,8 @@ export function tileAt(m: GameMap, x: number, y: number): number {
   return m.tile[r * m.size + c];
 }
 
-export const isSolid = (t: number) => t === T_WALL || t === T_TREE || t === T_CRATE;
-export const isOpaque = (t: number) => t === T_WALL || t === T_TREE;
+export const isSolid = (t: number) => t === T_WALL || t === T_TREE || t === T_CRATE || t === T_DOOR;
+export const isOpaque = (t: number) => t === T_WALL || t === T_TREE || t === T_DOOR;
 
 export function solidAt(m: GameMap, x: number, y: number) { return isSolid(tileAt(m, x, y)); }
 
@@ -55,7 +58,7 @@ function hollow(m: GameMap, x: number, y: number, w: number, h: number, t = T_WA
 
 export function generateMap(seed = (Math.random() * 1e9) | 0): GameMap {
   const rnd = mulberry32(seed);
-  const m: GameMap = { size: MAP_SIZE, tile: new Uint8Array(MAP_SIZE * MAP_SIZE), spots: [], seed };
+  const m: GameMap = { size: MAP_SIZE, tile: new Uint8Array(MAP_SIZE * MAP_SIZE), spots: [], doors: [], seed };
 
   // лес по краям мира — естественная граница
   for (let i = 0; i < 900; i++) {
@@ -142,6 +145,24 @@ export function generateMap(seed = (Math.random() * 1e9) | 0): GameMap {
     if (m.tile[idx(c, r)] !== T_FLOOR) continue;
     if (c > 48 && c < 80 && r > 48 && r < 80) continue;
     m.tile[idx(c, r)] = rnd() < 0.75 ? T_TREE : T_CRATE;
+  }
+
+  // закрытые схроны по углам мира: нужен ключ
+  const vaults: Array<[number, number, string, string]> = [
+    [10, 10, 'key_nw', 'Схрон руин'],
+    [108, 10, 'key_ne', 'Схрон леса'],
+    [10, 108, 'key_sw', 'Схрон деревни'],
+    [108, 108, 'key_se', 'Схрон склада'],
+  ];
+  for (const [vx, vy, key, label] of vaults) {
+    block(m, vx - 1, vy - 1, 11, 11, T_FLOOR);
+    hollow(m, vx, vy, 9, 9);
+    const dc = vx + 4, dr = vy + 8;
+    m.tile[idx(dc, dr)] = T_DOOR;
+    m.doors.push({ c: dc, r: dr, key, label, open: false });
+    for (const [ox, oy] of [[2, 2], [6, 3], [4, 6]]) {
+      m.spots.push({ x: (vx + ox) * TILE + TILE / 2, y: (vy + oy) * TILE + TILE / 2, kind: 'safe' });
+    }
   }
 
   // тайники: только на свободных клетках

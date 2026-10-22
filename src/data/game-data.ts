@@ -79,7 +79,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
 export interface ItemDef {
   id: string;
   name: string;
-  kind: 'weapon' | 'ammo' | 'med' | 'stim' | 'armor' | 'valuable';
+  kind: 'weapon' | 'ammo' | 'med' | 'stim' | 'armor' | 'valuable' | 'key';
   stack: number;
   value: number;
   desc: string;
@@ -94,7 +94,8 @@ export const ITEMS: Record<string, ItemDef> = {
   ammo_smg: { id: 'ammo_smg', name: 'Патроны 9×21', kind: 'ammo', stack: 120, value: 2, desc: 'Для ПП' },
   ammo_shotgun: { id: 'ammo_shotgun', name: 'Картечь 12к', kind: 'ammo', stack: 24, value: 6, desc: 'Для дробовика' },
   ammo_rifle: { id: 'ammo_rifle', name: 'Патроны 7.62', kind: 'ammo', stack: 40, value: 9, desc: 'Для винтовки' },
-  medkit: { id: 'medkit', name: 'Аптечка', kind: 'med', stack: 4, value: 90, desc: '+45 HP, 2.5 с' },
+  medkit: { id: 'medkit', name: 'Аптечка', kind: 'med', stack: 4, value: 90, desc: '+45 HP, останавливает кровь' },
+  bandage: { id: 'bandage', name: 'Бинт', kind: 'med', stack: 6, value: 35, desc: 'Останавливает кровотечение' },
   stim: { id: 'stim', name: 'Стимулятор', kind: 'stim', stack: 4, value: 60, desc: 'Мгновенно +60 стамины' },
   plate: { id: 'plate', name: 'Плита брони', kind: 'armor', stack: 3, value: 80, desc: 'Ремонтирует броню на 40' },
   armor1: { id: 'armor1', name: 'Бронежилет «Слон»', kind: 'armor', stack: 1, value: 260, desc: '−30% урона, 60 прочности' },
@@ -102,6 +103,10 @@ export const ITEMS: Record<string, ItemDef> = {
   gold: { id: 'gold', name: 'Золото', kind: 'valuable', stack: 9, value: 55, desc: 'Ценность' },
   chip: { id: 'chip', name: 'Шахматный чип', kind: 'valuable', stack: 9, value: 110, desc: 'Ценность' },
   relic: { id: 'relic', name: 'Реликвия двора', kind: 'valuable', stack: 3, value: 320, desc: 'Редкая ценность' },
+  key_nw: { id: 'key_nw', name: 'Ключ: руины', kind: 'key', stack: 1, value: 0, desc: 'Открывает схрон в северо-западных руинах' },
+  key_ne: { id: 'key_ne', name: 'Ключ: лес', kind: 'key', stack: 1, value: 0, desc: 'Открывает схрон в северо-восточном лесу' },
+  key_sw: { id: 'key_sw', name: 'Ключ: деревня', kind: 'key', stack: 1, value: 0, desc: 'Открывает схрон в юго-западной деревне' },
+  key_se: { id: 'key_se', name: 'Ключ: склад', kind: 'key', stack: 1, value: 0, desc: 'Открывает схрон на юго-восточном складе' },
 };
 
 export const ARMOR_TIERS: Record<string, { reduce: number; dur: number }> = {

@@ -1,4 +1,4 @@
-import { CLASSES, WEAPONS } from '../data/game-data';
+import { CLASSES, ITEMS, WEAPONS } from '../data/game-data';
 import { clamp, dist } from '../core/math';
 import type { Input } from '../core/input';
 import type { Raid } from '../game/state';
@@ -15,6 +15,7 @@ export class Hud {
   private hpText: HTMLElement;
   private sta: HTMLElement;
   private armor: HTMLElement;
+  private bleedEl: HTMLElement;
   private timer: HTMLElement;
   private kills: HTMLElement;
   private wname: HTMLElement;
@@ -41,7 +42,7 @@ export class Hud {
       <div class="hud-top">
         <div class="vitals">
           <div class="bar-row"><span class="bar-label">HP</span><div class="bar hp"><i></i></div><b class="hp-num">100</b></div>
-          <div class="bar-row"><span class="bar-label">ST</span><div class="bar sta"><i></i></div><span class="armor-tag">броня 0</span></div>
+          <div class="bar-row"><span class="bar-label">ST</span><div class="bar sta"><i></i></div><span class="armor-tag">броня 0</span><span class="bleed-tag"></span></div>
         </div>
         <div class="raid-clock"><b class="clock">10:00</b><span class="kills">0 убийств</span></div>
       </div>
@@ -61,6 +62,7 @@ export class Hud {
           <button data-k="KeyQ">Навык</button>
           <button data-k="KeyR">Заряд</button>
           <button data-k="KeyE">Взять</button>
+          <button data-k="Tab">Рюкзак</button>
         </div>
       </div>
       <div class="hurt"></div>
@@ -71,6 +73,7 @@ export class Hud {
     this.hpText = q('.hp-num');
     this.sta = q('.bar.sta i');
     this.armor = q('.armor-tag');
+    this.bleedEl = q('.bleed-tag');
     this.timer = q('.clock');
     this.kills = q('.kills');
     this.wname = q('.wname');
@@ -103,6 +106,8 @@ export class Hud {
     this.hpText.textContent = String(Math.ceil(me.hp));
     this.sta.style.width = `${clamp(me.sta / me.maxSta, 0, 1) * 100}%`;
     this.armor.textContent = me.armor ? `броня ${Math.ceil(me.armorDur)}` : 'без брони';
+    this.bleedEl.textContent = me.bleed > 0 ? `кровь ×${me.bleed}` : '';
+    this.bleedEl.style.display = me.bleed > 0 ? '' : 'none';
     this.timer.textContent = fmt(600 - r.time);
     this.kills.textContent = `${me.kills} убийств`;
     const w = WEAPONS[me.weapon];
@@ -116,15 +121,24 @@ export class Hud {
     this.hurt.style.opacity = String(clamp(r.hurt * 1.2, 0, 0.85));
 
     let pr = '';
+    const door = r.map.doors.find((d) => !d.open && dist((d.c + 0.5) * 32, (d.r + 0.5) * 32, me.x, me.y) < 92);
+    if (door) {
+      pr = me.inv.some((i) => i.id === door.key)
+        ? `<b>E</b> — открыть ${door.label.toLowerCase()}`
+        : `Заперто. Нужен ${ITEMS[door.key]?.name ?? 'ключ'}`;
+      this.prompt.innerHTML = pr;
+      this.prompt.style.opacity = '1';
+      this.mobile.classList.toggle('on', touch);
+      this.sticks(touch);
+      renderer.drawMinimap(this.minimap, r);
+      return;
+    }
     let nearLoot = false;
     for (const b of r.loot) {
       if (!b.opened && dist(b.x, b.y, me.x, me.y) < 62) { nearLoot = true; break; }
     }
     if (nearLoot) pr = '<b>E</b> — обыскать';
     else {
-      for (let i = 0; i < 3; i++) {
-        if (!r.extractOpen[i]) continue;
-      }
       const idx = [0, 1, 2].find((i) => {
         const s = [{ x: 64 * 32 + 16, y: 4 * 32 + 16 }, { x: 4 * 32 + 16, y: 64 * 32 + 16 }, { x: 64 * 32 + 16, y: 123 * 32 + 16 }][i];
         return r.extractOpen[i] && dist(me.x, me.y, s.x, s.y) < 92;
@@ -135,6 +149,11 @@ export class Hud {
     this.prompt.style.opacity = pr ? '1' : '0';
 
     this.mobile.classList.toggle('on', touch);
+    this.sticks(touch);
+    renderer.drawMinimap(this.minimap, r);
+  }
+
+  private sticks(touch: boolean) {
     const m = this.input.move, a = this.input.aim;
     this.stickL.classList.toggle('on', touch && m.active);
     this.stickR.classList.toggle('on', touch && a.active);
@@ -144,8 +163,6 @@ export class Hud {
     this.stickR.style.left = `${a.ox - 52}px`;
     this.stickR.style.top = `${a.oy - 52}px`;
     this.stickRDot.style.transform = `translate(${a.dx * 40}px, ${a.dy * 40}px)`;
-
-    renderer.drawMinimap(this.minimap, r);
   }
 }
 

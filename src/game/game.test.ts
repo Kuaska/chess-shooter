@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { MAP_SIZE, TILE, generateMap, isSolid, losClear, extractPositions } from '../world/map';
-import { applySnapshot, createRaid, snapshotRaid } from './state';
-import { moveFighter, updateRaid, NO_INPUT } from './sim';
+import { addItem, applySnapshot, createRaid, snapshotRaid } from './state';
+import { moveFighter, updateRaid, useItemInRaid, NO_INPUT } from './sim';
 import { CLASSES } from '../data/game-data';
+import { normalizeTag } from '../net/friends';
 
 function firstSolidNearCenter(m: ReturnType<typeof generateMap>): { x: number; y: number } | null {
   for (let rr = 55; rr < 75; rr++) {
@@ -111,5 +112,68 @@ describe('рейд', () => {
     updateRaid(r, NO_INPUT, 0.1);
     expect(r.time).toBeCloseTo(0.1, 5);
     expect(Math.abs(r.me.x - x)).toBeLessThan(1);
+  });
+});
+
+describe('схроны и состояния', () => {
+  it('создаёт четыре запертых схрона', () => {
+    const m = generateMap(11);
+    expect(m.doors).toHaveLength(4);
+    expect(m.doors.every((d) => !d.open)).toBe(true);
+    for (const d of m.doors) expect(m.tile[d.r * MAP_SIZE + d.c]).toBe(6);
+  });
+
+  it('ключ открывает дверь и тратится', () => {
+    const r = createRaid({ seed: 11, classId: 'pawn', weapon: 'pistol', armor: null, name: 'Тест' });
+    const door = r.map.doors[0];
+    r.me.x = (door.c + 0.5) * TILE;
+    r.me.y = (door.r + 0.5) * TILE + 46;
+    addItem(r.me, { id: door.key, n: 1 });
+    updateRaid(r, { ...NO_INPUT, interact: true }, 0.016);
+    expect(door.open).toBe(true);
+    expect(r.map.tile[door.r * MAP_SIZE + door.c]).toBe(0);
+    expect(r.me.inv.some((i) => i.id === door.key)).toBe(false);
+  });
+
+  it('без ключа дверь остаётся запертой', () => {
+    const r = createRaid({ seed: 12, classId: 'pawn', weapon: 'pistol', armor: null, name: 'Тест' });
+    const door = r.map.doors[1];
+    r.me.x = (door.c + 0.5) * TILE;
+    r.me.y = (door.r + 0.5) * TILE + 46;
+    updateRaid(r, { ...NO_INPUT, interact: true }, 0.016);
+    expect(door.open).toBe(false);
+  });
+
+  it('кровотечение снимает HP со временем', () => {
+    const r = createRaid({ seed: 13, classId: 'rook', weapon: 'pistol', armor: null, name: 'Тест' });
+    r.me.hp = 100;
+    r.me.bleed = 2;
+    updateRaid(r, NO_INPUT, 1);
+    expect(r.me.hp).toBeLessThan(100);
+    r.me.bleed = 0;
+  });
+
+  it('бинт останавливает кровотечение', () => {
+    const r = createRaid({ seed: 14, classId: 'pawn', weapon: 'pistol', armor: null, name: 'Тест' });
+    addItem(r.me, { id: 'bandage', n: 1 });
+    r.me.bleed = 2;
+    expect(useItemInRaid(r, r.me, 'bandage')).toBe(true);
+    expect(r.me.bleed).toBe(0);
+  });
+
+  it('кооп-рейд помечен и урон по своим отключён', () => {
+    const r = createRaid({
+      seed: 15, classId: 'pawn', weapon: 'pistol', armor: null, name: 'Хост', mode: 'pvp', coop: true,
+      players: [{ name: 'Друг', classId: 'rook', seat: 1, weapon: 'smg', armor: null }],
+    });
+    expect(r.coop).toBe(true);
+    const friend = r.fighters.find((f) => f.id === 3)!;
+    expect(friend.isBot).toBe(false);
+  });
+
+  it('дружеский тег нормализуется', () => {
+    expect(normalizeTag(' ab-cd ')).toBe('ABCD');
+    expect(normalizeTag('x1')).toBe('X1');
+    expect(normalizeTag('')).toBe('');
   });
 });

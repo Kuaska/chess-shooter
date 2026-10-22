@@ -8,6 +8,11 @@ export interface SaveData {
   armor: string | null;
   classId: ClassId;
   stats: { raids: number; extracts: number; deaths: number; kills: number };
+  tag: string;
+  friends: Array<{ tag: string; name: string }>;
+  volume: number;
+  muted: boolean;
+  insured: { weapon: WeaponId; armor: string | null } | null;
 }
 
 const KEY = 'chessshooter.save.v1';
@@ -25,6 +30,11 @@ export function defaultSave(): SaveData {
     armor: 'armor1',
     classId: 'pawn',
     stats: { raids: 0, extracts: 0, deaths: 0, kills: 0 },
+    tag: '',
+    friends: [],
+    volume: 0.7,
+    muted: false,
+    insured: null,
   };
 }
 
@@ -36,6 +46,11 @@ export function loadSave(): SaveData {
     if (!data || typeof data.coins !== 'number' || !Array.isArray(data.stash)) return defaultSave();
     if (!WEAPONS[data.weapon]) data.weapon = 'pistol';
     if (!CLASSES[data.classId]) data.classId = 'pawn';
+    if (typeof data.tag !== 'string') data.tag = '';
+    if (!Array.isArray(data.friends)) data.friends = [];
+    if (typeof data.volume !== 'number') data.volume = 0.7;
+    if (typeof data.muted !== 'boolean') data.muted = false;
+    if (data.insured === undefined) data.insured = null;
     return data;
   } catch {
     return defaultSave();
@@ -99,12 +114,14 @@ export function equip(s: SaveData, id: string): boolean {
     s.stash.splice(idx, 1);
     s.stash.push({ id: s.weapon, n: 1 });
     s.weapon = id as WeaponId;
+    s.insured = null;
     return true;
   }
   if (def.kind === 'armor') {
     s.stash.splice(idx, 1);
     if (s.armor) s.stash.push({ id: s.armor, n: 1 });
     s.armor = id;
+    s.insured = null;
     return true;
   }
   return false;
@@ -118,13 +135,34 @@ export const SHOP: Array<{ id: string; price: number }> = [
   { id: 'armor1', price: 260 },
   { id: 'armor2', price: 620 },
   { id: 'medkit', price: 90 },
+  { id: 'bandage', price: 35 },
   { id: 'stim', price: 60 },
   { id: 'plate', price: 80 },
   { id: 'ammo_pistol', price: 40 },
   { id: 'ammo_smg', price: 50 },
   { id: 'ammo_shotgun', price: 55 },
   { id: 'ammo_rifle', price: 75 },
+  { id: 'key_nw', price: 420 },
+  { id: 'key_ne', price: 420 },
+  { id: 'key_sw', price: 420 },
+  { id: 'key_se', price: 420 },
 ];
+
+const priceOf = (id: string) => SHOP.find((e) => e.id === id)?.price ?? 0;
+
+/** Стоимость страховки текущего снаряжения. */
+export function insuranceCost(s: SaveData): number {
+  return Math.max(30, Math.round((priceOf(s.weapon) + (s.armor ? priceOf(s.armor) : 0)) * 0.25));
+}
+
+/** Страховка возвращает снаряжение в схрон при смерти. */
+export function insure(s: SaveData): boolean {
+  const cost = insuranceCost(s);
+  if (s.coins < cost) return false;
+  s.coins -= cost;
+  s.insured = { weapon: s.weapon, armor: s.armor };
+  return true;
+}
 
 export function buy(s: SaveData, id: string): boolean {
   const entry = SHOP.find((e) => e.id === id);

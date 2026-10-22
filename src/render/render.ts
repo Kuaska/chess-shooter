@@ -1,7 +1,7 @@
 import { CLASSES, WEAPONS } from '../data/game-data';
 import { clamp, dist } from '../core/math';
 import { extractSpots, type Fighter, type Raid } from '../game/state';
-import { MAP_SIZE, T_CRATE, T_PALACE, T_ROAD, TILE, T_TREE, T_WALL, losClear, tileAt } from '../world/map';
+import { MAP_SIZE, T_CRATE, T_DOOR, T_PALACE, T_ROAD, TILE, T_TREE, T_WALL, losClear, tileAt } from '../world/map';
 
 export interface Camera { x: number; y: number; zoom: number; }
 
@@ -163,6 +163,15 @@ export class Renderer {
           ctx.fillRect(cc * TILE, rr * TILE, TILE, 5);
           ctx.fillStyle = 'rgba(0,0,0,0.25)';
           ctx.fillRect(cc * TILE, rr * TILE + TILE - 6, TILE, 6);
+        } else if (t === T_DOOR) {
+          ctx.fillStyle = '#4a3a26';
+          ctx.fillRect(cc * TILE, rr * TILE, TILE, TILE);
+          ctx.fillStyle = '#6b5433';
+          for (let i = 0; i < 4; i++) ctx.fillRect(cc * TILE + 4 + i * 7, rr * TILE + 3, 4, TILE - 6);
+          ctx.fillStyle = '#d9b24c';
+          ctx.beginPath();
+          ctx.arc(cc * TILE + 23, rr * TILE + 16, 3.4, 0, 6.29);
+          ctx.fill();
         } else if (t === T_TREE) {
           ctx.fillStyle = 'rgba(0,0,0,0.35)';
           ctx.beginPath();

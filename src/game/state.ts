@@ -1,6 +1,6 @@
 import { ARMOR_TIERS, BOTS, CLASSES, ITEMS, RAID_TIME, WEAPONS, type BotKind, type ClassId, type WeaponId } from '../data/game-data';
 import { mulberry32, rand } from '../core/math';
-import { TILE, generateMap, randomFreeSpot, type GameMap, type LootSpot } from '../world/map';
+import { TILE, T_FLOOR, generateMap, idx, randomFreeSpot, type GameMap, type LootSpot } from '../world/map';
 
 export interface Item { id: string; n: number }
 
@@ -53,6 +53,7 @@ export interface Fighter {
   walkT: number;
   brain: BotBrain | null;
   seat: number;
+  bleed: number;
 }
 
 export interface Bullet {
@@ -77,6 +78,8 @@ export interface Raid {
   map: GameMap;
   seed: number;
   mode: 'solo' | 'pvp';
+  coop: boolean;
+  insured: boolean;
   fighters: Fighter[];
   bullets: Bullet[];
   loot: LootBox[];
@@ -87,7 +90,10 @@ export interface Raid {
   over: 'extracted' | 'dead' | null;
   me: Fighter;
   hurt: number;
+  fx: FxEvent[];
 }
+
+export interface FxEvent { k: string; x: number; y: number }
 
 export const PLAYER_R = 13;
 
@@ -97,7 +103,7 @@ export function makeFighter(partial: Partial<Fighter> & { x: number; y: number }
     botKind: null, x: 0, y: 0, vx: 0, vy: 0, angle: 0, hp: 100, maxHp: 100, sta: 100, maxSta: 100,
     speed: 170, weapon: 'pistol', mag: 12, reserve: {}, fireT: 0, reloadT: 0, armor: null, armorDur: 0,
     abilityT: 0, shieldT: 0, revealT: 0, dashT: 0, dashAngle: 0, extractT: 0, extracted: false, alive: true,
-    kills: 0, inv: [], hitT: 0, walkT: 0, brain: null, seat: -1,
+    kills: 0, inv: [], hitT: 0, walkT: 0, brain: null, seat: -1, bleed: 0,
   };
   return { ...base, ...partial };
 }
@@ -107,15 +113,17 @@ function lootRoll(rnd: () => number, kind: LootBox['kind'], bonus: number): Item
   const count = kind === 'safe' ? 3 : kind === 'duffel' ? 2 : 2;
   for (let i = 0; i < count; i++) {
     const r = rnd();
-    if (r < 0.24) out.push({ id: 'ammo_pistol', n: 12 + Math.floor(rnd() * 12) });
-    else if (r < 0.4) out.push({ id: 'ammo_smg', n: 20 + Math.floor(rnd() * 20) });
-    else if (r < 0.5) out.push({ id: 'ammo_shotgun', n: 4 + Math.floor(rnd() * 4) });
-    else if (r < 0.58) out.push({ id: 'ammo_rifle', n: 5 + Math.floor(rnd() * 5) });
-    else if (r < 0.69) out.push({ id: 'medkit', n: 1 });
+    if (r < 0.22) out.push({ id: 'ammo_pistol', n: 12 + Math.floor(rnd() * 12) });
+    else if (r < 0.38) out.push({ id: 'ammo_smg', n: 20 + Math.floor(rnd() * 20) });
+    else if (r < 0.47) out.push({ id: 'ammo_shotgun', n: 4 + Math.floor(rnd() * 4) });
+    else if (r < 0.54) out.push({ id: 'ammo_rifle', n: 5 + Math.floor(rnd() * 5) });
+    else if (r < 0.64) out.push({ id: 'medkit', n: 1 });
+    else if (r < 0.7) out.push({ id: 'bandage', n: 1 + Math.floor(rnd() * 2) });
     else if (r < 0.76) out.push({ id: 'stim', n: 1 });
-    else if (r < 0.82) out.push({ id: 'plate', n: 1 });
-    else if (r < 0.87 && kind !== 'crate') out.push({ id: rnd() < 0.5 ? 'armor1' : 'armor2', n: 1 });
-    else if (r < 0.93) out.push({ id: rnd() < 0.6 ? 'gold' : 'chip', n: 1 + Math.floor(rnd() * 3) });
+    else if (r < 0.81) out.push({ id: 'plate', n: 1 });
+    else if (r < 0.855 && kind !== 'crate') out.push({ id: rnd() < 0.5 ? 'armor1' : 'armor2', n: 1 });
+    else if (r < 0.9) out.push({ id: (['key_nw', 'key_ne', 'key_sw', 'key_se'] as const)[Math.floor(rnd() * 4)], n: 1 });
+    else if (r < 0.96) out.push({ id: rnd() < 0.6 ? 'gold' : 'chip', n: 1 + Math.floor(rnd() * 3) });
     else out.push({ id: 'relic', n: 1 });
   }
   if (bonus > 0 && rnd() < bonus) out.push({ id: 'gold', n: 2 });
@@ -129,6 +137,8 @@ export interface CreateOptions {
   armor: string | null;
   name: string;
   mode?: 'solo' | 'pvp';
+  coop?: boolean;
+  insured?: boolean;
   botCount?: number;
   players?: PvpPlayerSpec[];
 }
@@ -153,6 +163,7 @@ export function createRaid(opts: CreateOptions): Raid {
     x: spawn.x, y: spawn.y, hp: cls.hp, maxHp: cls.hp, sta: cls.stamina, maxSta: cls.stamina, speed: cls.speed,
     weapon: opts.weapon, mag: WEAPONS[opts.weapon].mag, armor: opts.armor, armorDur: opts.armor ? (ARMOR_TIERS[opts.armor]?.dur ?? 60) : 0,
     reserve: { ammo_pistol: 48, ammo_smg: 60, ammo_shotgun: 12, ammo_rifle: 20 },
+    inv: [{ id: 'medkit', n: 1 }, { id: 'bandage', n: 2 }],
   });
 
   const fighters: Fighter[] = [me];
@@ -166,7 +177,7 @@ export function createRaid(opts: CreateOptions): Raid {
       speed: c.speed, weapon: p.weapon, mag: WEAPONS[p.weapon].mag,
       armor: p.armor, armorDur: p.armor ? (ARMOR_TIERS[p.armor]?.dur ?? 60) : 0,
       reserve: { ammo_pistol: 48, ammo_smg: 60, ammo_shotgun: 12, ammo_rifle: 20 },
-      inv: [{ id: 'medkit', n: 1 }, { id: 'ammo_' + WEAPONS[p.weapon].ammo, n: 30 }],
+      inv: [{ id: 'medkit', n: 1 }, { id: 'bandage', n: 2 }, { id: 'ammo_' + WEAPONS[p.weapon].ammo, n: 30 }],
     }));
   }
   const kinds: BotKind[] = ['pawn', 'pawn', 'pawn', 'pawn', 'knight', 'knight', 'knight', 'bishop', 'bishop', 'rook', 'rook', 'pawn', 'knight', 'bishop'];
@@ -201,7 +212,8 @@ export function createRaid(opts: CreateOptions): Raid {
   }));
 
   return {
-    map, seed: opts.seed, mode: opts.mode ?? 'solo', fighters, bullets: [], loot, particles: [],
+    map, seed: opts.seed, mode: opts.mode ?? 'solo', coop: opts.coop ?? false, insured: opts.insured ?? false,
+    fighters, bullets: [], loot, particles: [], fx: [],
     time: 0, extractOpen: [false, false, false], log: ['Рейд начался. Найди лут и уходи через эвакуацию.'],
     over: null, me, hurt: 0,
   };
@@ -216,7 +228,7 @@ export function addItem(f: Fighter, item: Item): boolean {
     const stack = f.inv.find((i) => i.id === item.id && i.n < def.stack);
     if (stack) { stack.n = Math.min(def.stack, stack.n + item.n); return true; }
   }
-  if (f.inv.length >= 14) return false;
+  if (f.inv.length >= 20) return false;
   f.inv.push({ id: item.id, n: Math.min(item.n, def.stack) });
   return true;
 }
@@ -257,6 +269,7 @@ export interface SnapFighter {
   i: number; x: number; y: number; a: number; hp: number; mh: number;
   al: 0 | 1; ex: 0 | 1; g: string; c: string; n: string; cl: ClassId; bk: BotKind | null;
   seat: number; w: WeaponId; mg: number; k: number; sh: number; rv: number; ab: number; et: number; dd: number; at: string | null;
+  bl?: number;
   iv?: [string, number][];
 }
 
@@ -267,6 +280,8 @@ export interface Snapshot {
   b: [number, number, number, number, string][];
   l: [number, 0 | 1][];
   g: string[];
+  e?: string[];
+  d?: [number, number][];
   v: 1;
 }
 
@@ -282,11 +297,14 @@ export function snapshotRaid(r: Raid): Snapshot {
       w: f.weapon, mg: f.mag, k: f.kills, sh: Math.round(f.shieldT * 10) / 10,
       rv: Math.round(f.revealT * 10) / 10, ab: Math.round(f.abilityT * 10) / 10,
       et: Math.round(f.extractT * 10) / 10, dd: f.dashT > 0 ? 1 : 0, at: f.armor,
+      bl: f.bleed,
       iv: f.isBot ? undefined : f.inv.map((it) => [it.id, it.n] as [string, number]),
     })),
     b: r.bullets.map((b) => [Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy), b.color] as [number, number, number, number, string]),
     l: r.loot.filter((b) => b.opened || b.id >= 8000).map((b) => [b.id, b.opened ? 1 : 0] as [number, 0 | 1]),
     g: r.log.slice(0, 10),
+    e: r.fx.slice(0, 12).map((e) => `${e.k}:${Math.round(e.x)}:${Math.round(e.y)}`),
+    d: r.map.doors.filter((d) => d.open).map((d) => [d.c, d.r] as [number, number]),
   };
 }
 
@@ -310,6 +328,7 @@ export function applySnapshot(r: Raid, s: Snapshot): void {
     f.weapon = sf.w; f.mag = sf.mg; f.kills = sf.k; f.shieldT = sf.sh; f.revealT = sf.rv;
     if (sf.iv) f.inv = sf.iv.map(([id, n]) => ({ id, n }));
     f.abilityT = sf.ab; f.extractT = sf.et; f.dashT = sf.dd; f.armor = sf.at;
+    f.bleed = sf.bl ?? 0;
     f.isBot = sf.bk !== null;
   }
   for (const f of r.fighters) if (!seen.has(f.id)) f.extracted = true;
@@ -326,6 +345,19 @@ export function applySnapshot(r: Raid, s: Snapshot): void {
   }
   const mine = r.fighters.find((f) => f.id === r.me.id) ?? r.me;
   r.me = mine;
+  if (s.e) {
+    for (const raw of s.e) {
+      const [k, xs, ys] = raw.split(':');
+      r.fx.push({ k, x: Number(xs) || 0, y: Number(ys) || 0 });
+    }
+  }
+  if (s.d) {
+    for (const [c, rr] of s.d) {
+      r.map.tile[idx(c, rr)] = T_FLOOR;
+      const door = r.map.doors.find((x) => x.c === c && x.r === rr);
+      if (door) door.open = true;
+    }
+  }
   if (!mine.alive) r.over = 'dead';
   else if (mine.extracted) r.over = 'extracted';
 }

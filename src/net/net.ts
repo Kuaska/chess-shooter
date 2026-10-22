@@ -2,7 +2,7 @@ import type { ClassId } from '../data/game-data';
 import type { PlayerInput } from '../game/sim';
 import { fighterIdForSeat, type Snapshot } from '../game/state';
 
-const NTFY = 'https://ntfy.sh';
+const NTFY = 'https://ntfy.envs.net';
 const ICE: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:global.stun.twilio.com:3478' },
@@ -15,13 +15,19 @@ export interface LobbyPlayer {
   classId: ClassId;
 }
 
+export type NetAction =
+  | { k: 'use'; id: string }
+  | { k: 'drop'; i: number }
+  | { k: 'equip'; id: string };
+
 export interface NetHandlers {
   onCode(code: string): void;
-  onLobby(players: LobbyPlayer[]): void;
-  onStart(seed: number, seat: number, players: LobbyPlayer[]): void;
+  onLobby(players: LobbyPlayer[], coop: boolean): void;
+  onStart(seed: number, seat: number, players: LobbyPlayer[], coop: boolean): void;
   onSnapshot(s: Snapshot): void;
   onStatus(text: string): void;
   onError(text: string): void;
+  onAction?(seat: number, a: NetAction): void;
 }
 
 export interface Net {
@@ -29,10 +35,13 @@ export interface Net {
   code: string;
   seat: number;
   players: LobbyPlayer[];
+  coop: boolean;
   startGame(seed: number): void;
+  setCoop(v: boolean): void;
   publishSnapshot(s: Snapshot): void;
   takeInputs(): Map<number, PlayerInput>;
   sendInput(input: PlayerInput): void;
+  sendAction(a: NetAction): void;
   destroy(): void;
 }
 
@@ -73,6 +82,7 @@ class HostNet implements Net {
   code: string;
   seat = 0;
   players: LobbyPlayer[];
+  coop: boolean;
   private id = randomId();
   private h: NetHandlers;
   private es: EventSource;
@@ -80,13 +90,14 @@ class HostNet implements Net {
   private inputs = new Map<number, PlayerInput>();
   private started = false;
 
-  constructor(name: string, classId: ClassId, h: NetHandlers) {
+  constructor(name: string, classId: ClassId, coop: boolean, h: NetHandlers) {
     this.h = h;
+    this.coop = coop;
     this.code = token(5);
     this.players = [{ id: this.id, seat: 0, name: name || 'Хост', classId }];
     this.es = subscribe(topic(this.code, 'h'), (m) => this.onSignal(m));
     h.onCode(this.code);
-    h.onLobby(this.players);
+    h.onLobby(this.players, this.coop);
   }
 
   private err(to: string, message: string) {
@@ -111,15 +122,15 @@ class HostNet implements Net {
     const already = this.players.find((p) => p.id === from);
     if (already) {
       this.broadcast({ t: 'welcome', to: from, seat: already.seat });
-      this.broadcast({ t: 'lobby', players: this.players });
+      this.broadcast({ t: 'lobby', players: this.players, coop: this.coop });
       return;
     }
     if (this.players.length >= 4) { this.err(from, 'В комнате уже четыре игрока'); return; }
     const seat = [1, 2, 3].find((s) => !this.players.some((p) => p.seat === s))!;
     this.players.push({ id: from, seat, name: String(m.name ?? 'Игрок').slice(0, 14), classId: (m.classId as ClassId) ?? 'pawn' });
     this.broadcast({ t: 'welcome', to: from, seat });
-    this.broadcast({ t: 'lobby', players: this.players });
-    this.h.onLobby(this.players);
+    this.broadcast({ t: 'lobby', players: this.players, coop: this.coop });
+    this.h.onLobby(this.players, this.coop);
     this.h.onStatus(`Подключился ${String(m.name ?? 'игрок')}.`);
     void this.connect(from);
   }
@@ -134,7 +145,7 @@ class HostNet implements Net {
     dc.onmessage = (e) => this.onDc(rid, String(e.data));
     dc.onopen = () => {
       this.h.onStatus('Соединение установлено.');
-      this.broadcast({ t: 'lobby', players: this.players });
+      this.broadcast({ t: 'lobby', players: this.players, coop: this.coop });
     };
     dc.onclose = () => this.h.onStatus('Игрок отключился.');
     pc.onicecandidate = (e) => {
@@ -172,14 +183,15 @@ class HostNet implements Net {
     const p = this.players.find((x) => x.id === rid);
     if (!p) return;
     try {
-      const m = JSON.parse(raw) as { t: string; i?: PlayerInput };
+      const m = JSON.parse(raw) as { t: string; i?: PlayerInput; a?: NetAction };
       if (m.t === 'i' && m.i) this.inputs.set(p.seat, m.i);
+      else if (m.t === 'act' && m.a) this.h.onAction?.(p.seat, m.a);
     } catch { /* */ }
   }
 
   startGame(seed: number) {
     this.started = true;
-    const msg = { t: 'start', seed, players: this.players };
+    const msg = { t: 'start', seed, players: this.players, coop: this.coop };
     const send = () => {
       this.broadcast(msg);
       for (const { dc } of this.pcs.values()) {
@@ -196,6 +208,15 @@ class HostNet implements Net {
       if (dc?.readyState === 'open') dc.send(msg);
     }
   }
+
+  setCoop(v: boolean) {
+    if (this.started) return;
+    this.coop = v;
+    this.broadcast({ t: 'lobby', players: this.players, coop: this.coop });
+    this.h.onLobby(this.players, this.coop);
+  }
+
+  sendAction(): void { /* хост применяет действия сам */ }
 
   takeInputs(): Map<number, PlayerInput> {
     const out = new Map<number, PlayerInput>();
@@ -217,6 +238,7 @@ class GuestNet implements Net {
   code: string;
   seat = -1;
   players: LobbyPlayer[] = [];
+  coop = false;
   private id = randomId();
   private h: NetHandlers;
   private es: EventSource;
@@ -263,11 +285,19 @@ class GuestNet implements Net {
       this.seat = Number(m.seat);
       this.stopHello();
       clearTimeout(this.joinTimer);
+      if (this.seat >= 0 && !this.players.some((p) => p.id === this.id)) {
+        this.players = [...this.players, { id: this.id, seat: this.seat, name: this.name, classId: this.classId }];
+      }
+      this.h.onLobby(this.players, this.coop);
       return;
     }
     if (m.t === 'lobby' && Array.isArray(m.players)) {
       this.players = m.players as LobbyPlayer[];
-      this.h.onLobby(this.players);
+      if (this.seat >= 0 && !this.players.some((p) => p.id === this.id)) {
+        this.players = [...this.players, { id: this.id, seat: this.seat, name: this.name, classId: this.classId }];
+      }
+      this.coop = Boolean(m.coop);
+      this.h.onLobby(this.players, this.coop);
       return;
     }
     if (m.t === 'offer') void this.onOffer(m);
@@ -284,7 +314,7 @@ class GuestNet implements Net {
         const me = this.players.find((p) => p.id === this.id);
         if (me) this.seat = me.seat;
       }
-      this.h.onStart(Number(m.seed) || 1, this.seat, this.players);
+      this.h.onStart(Number(m.seed) || 1, this.seat, this.players, Boolean(m.coop));
     }
   }
 
@@ -298,9 +328,9 @@ class GuestNet implements Net {
       this.dc.onclose = () => this.h.onStatus('Соединение с хостом потеряно.');
       this.dc.onmessage = (ev) => {
         try {
-          const m = JSON.parse(String(ev.data)) as { t: string; s?: Snapshot; seed?: number; players?: LobbyPlayer[] };
+          const m = JSON.parse(String(ev.data)) as { t: string; s?: Snapshot; seed?: number; players?: LobbyPlayer[]; coop?: boolean };
           if (m.t === 'snap' && m.s) this.h.onSnapshot(m.s);
-          else if (m.t === 'start' && !this.started) this.startFromDc(m.seed ?? 1, m.players);
+          else if (m.t === 'start' && !this.started) this.startFromDc(m.seed ?? 1, m.players, m.coop);
         } catch { /* */ }
       };
     };
@@ -317,16 +347,23 @@ class GuestNet implements Net {
     } catch { this.h.onError('Не удалось установить соединение с хостом.'); }
   }
 
-  private startFromDc(seed: number, players?: LobbyPlayer[]) {
+  private startFromDc(seed: number, players?: LobbyPlayer[], coop?: boolean) {
     if (this.started) return;
     this.started = true;
     this.stopHello();
     if (players) this.players = players;
+    this.coop = Boolean(coop);
     if (this.seat < 0) {
       const me = this.players.find((p) => p.id === this.id);
       if (me) this.seat = me.seat;
     }
-    this.h.onStart(seed, this.seat, this.players);
+    this.h.onStart(seed, this.seat, this.players, this.coop);
+  }
+
+  setCoop(): void { /* режим задаёт хост */ }
+
+  sendAction(a: NetAction) {
+    if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ t: 'act', a }));
   }
 
   startGame(): void { /* стартует хост */ }
@@ -349,8 +386,8 @@ class GuestNet implements Net {
   }
 }
 
-export function createHostNet(name: string, classId: ClassId, h: NetHandlers): Net {
-  return new HostNet(name, classId, h);
+export function createHostNet(name: string, classId: ClassId, coop: boolean, h: NetHandlers): Net {
+  return new HostNet(name, classId, coop, h);
 }
 
 export function createGuestNet(code: string, name: string, classId: ClassId, h: NetHandlers): Net {
